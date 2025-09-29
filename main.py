@@ -2,14 +2,10 @@ from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel
 from typing import List, Union
 from langchain_openai import ChatOpenAI
-from langchain.prompts import ChatPromptTemplate
-import json
+from langchain_core.prompts import ChatPromptTemplate
+from langchain_core.output_parsers import JsonOutputParser
 from dotenv import load_dotenv
 import os
-import re # 정규 표현식 관련
-import logging
-
-logging.basicConfig(level=logging.INFO)
 
 load_dotenv()
 OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
@@ -56,7 +52,7 @@ QUESTION_MAP = {
     37: "오픈소스 모델을 fine-tuning 해서 내 서비스에 적용하고 싶다.",
     38: "AI 모델의 추론 속도 최적화에도 흥미가 있다.",
     39: "데이터셋을 직접 만들어보고 싶다.",
-    40: "AI 기능을 서비스에 실시간으로 적용하는 걸 상상하면 설렌다."
+    40: "AI 기능을 서비스에 실시간으로 적용하는 걸 상상하면 설렌다.",
 }
 
 SUBJECTIVE_MAP = {
@@ -64,47 +60,81 @@ SUBJECTIVE_MAP = {
     "B": "사용자에게 더 편리한 화면을 만들기 위해 했던 시도나 고민을 적어주세요.",
     "C": "데이터 기반으로 의사결정을 내린 경험이 있다면 어떤 상황이었나요?",
     "D": "AI/ML을 활용한 아이디어가 있다면 구체적으로 적어주세요.",
-    "E": "협업 시 본인이 가장 중요하게 생각하는 가치는 무엇인가요?"
+    "E": "협업 시 본인이 가장 중요하게 생각하는 가치는 무엇인가요?",
 }
 
-llm = ChatOpenAI(
-    model="gpt-4o-mini",
-    temperature=0.7,
-    api_key=OPENAI_API_KEY
+examples = [
+    {
+        "major": "웹 개발자",
+        "majorKey": "web",
+        "selectedReason": "님은 시각적 표현을 통해 작업물을 선보이는 걸 선호하고 디자인 센스도 갖추고 있어서, 웹 개발 분야가 잘 맞을 것 같습니다.",
+        "graph": {
+            "web": 60,
+            "server": 10,
+            "game": 5,
+            "ios": 5,
+            "android": 10,
+            "ai": 11,
+        },
+    },
+    {
+        "major": "서버 개발자",
+        "majorKey": "server",
+        "selectedReason": "님은 시스템의 안정성과 성능을 중요하게 생각하고, 서버 아키텍처에 대한 깊은 이해가 있어 서버 개발 분야가 잘 맞을 것 같습니다.",
+        "graph": {
+            "web": 30,
+            "server": 50,
+            "game": 5,
+            "ios": 5,
+            "android": 10,
+            "ai": 11,
+        },
+    },
+]
+
+llm = ChatOpenAI(model="gpt-4o-mini", temperature=0.7, api_key=OPENAI_API_KEY)
+
+
+# JSON 출력 파서 생성
+class RecommendationResult(BaseModel):
+    major: str
+    majorKey: str
+    selectedReason: str
+    graph: dict
+
+
+# JSON 출력 파서 설정
+parser = JsonOutputParser(pydantic_object=RecommendationResult)
+
+prompt_template = ChatPromptTemplate.from_messages(
+    [
+        (
+            "system",
+            """당신은 대구소프트웨어마이스터고등학교 신입생을 위한 IT 진로 추천 전문가입니다.
+            다음은 사용자의 설문 응답입니다:
+            진로는 웹 개발자, 서버 개발자, 게입 개발자, iOS 개발자, 안드로이드 개발자, AI 개발자 중 하나로 추천해야 합니다.
+
+            답변 참고 예시:
+            {examples}
+            {format_instructions}
+            """,
+        ),
+        (
+            "user",
+            "설문지 응답: {answers}",
+        ),
+    ]
 )
 
-prompt_template = ChatPromptTemplate.from_template("""
-당신은 IT 진로 추천 전문가입니다.
-다음은 사용자의 설문 응답입니다 (객관식 17 + 서술형 3 = 총 20):
-진로는 프론트엔드 개발자, 백엔드 개발자, 데이터 분석가, AI 엔지니어 중 하나로 추천해야 합니다.
-
-{answers}
-
-응답을 종합적으로 분석해서 JSON 형식으로만 출력하세요:
-{{
-  "recommendation": "<추천 분야>",
-  "reason": "<간단한 이유>"
-}}
-""")
 
 class Answer(BaseModel):
     id: Union[int, str]
     answer: Union[int, str]
 
+
 class SurveyRequest(BaseModel):
     answers: List[Answer]
 
-# 응답에서 json만 뽑아내는거
-def extract_json(text: str) -> str:
-    # json 코드 블록 제거
-    text = re.sub(r"```json\s*", "", text)
-    text = re.sub(r"```", "", text)
-
-    # 중괄호 안에 JSON 추출
-    matches = re.findall(r"\{[\s\S]*?\}", text)
-    if matches:
-        return max(matches, key=len)
-    return text.strip()
 
 # api 엔드포인트
 @app.post("/major-recommend")
@@ -120,30 +150,20 @@ async def major_recommend(data: SurveyRequest):
             else:
                 qtext = SUBJECTIVE_MAP.get(str(ans.id), f"서술형 인식 불가({ans.id})")
                 return_text.append(f"[{ans.id}] {qtext}: {ans.answer}")
-        
+
         # 문자열 하나로 합치기
         formatted_answers = "\n".join(return_text)
-        chain_input = {"answers": formatted_answers}
+        chain_input = {
+            "answers": formatted_answers,
+            "examples": examples,  # 리스트 -> 문자열 자동 변환
+            "format_instructions": parser.get_format_instructions(),  # json 포맷 지정
+        }
 
-        response = llm.invoke(prompt_template.format(**chain_input))
+        chain = prompt_template | llm | parser
+        result = chain.invoke(chain_input)
 
-        if hasattr(response, "content"):
-            re_text = response.content
-        else:
-            re_text = str(response)
+        return result
 
-        clean = extract_json(re_text)
-        try:
-            parsed = json.loads(clean)
-        except Exception:
-            # 파싱 실패하면 원문 통째로 넣음
-            parsed = {
-                "recommendation": "분석 실패",
-                "reason": f"응답 원문: {clean}"
-            }
-
-        return parsed
-    
     # 나오면 안되는거
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
