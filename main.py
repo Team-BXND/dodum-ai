@@ -4,10 +4,9 @@ from typing import List, Union
 from langchain_openai import ChatOpenAI
 from langchain.prompts import ChatPromptTemplate
 import json
-import traceback
 from dotenv import load_dotenv
 import os
-import re
+import re # 정규 표현식 관련
 import logging
 
 logging.basicConfig(level=logging.INFO)
@@ -95,27 +94,34 @@ class Answer(BaseModel):
 class SurveyRequest(BaseModel):
     answers: List[Answer]
 
+# 응답에서 json만 뽑아내는거
 def extract_json(text: str) -> str:
+    # json 코드 블록 제거
     text = re.sub(r"```json\s*", "", text)
     text = re.sub(r"```", "", text)
 
+    # 중괄호 안에 JSON 추출
     matches = re.findall(r"\{[\s\S]*?\}", text)
     if matches:
         return max(matches, key=len)
     return text.strip()
 
+# api 엔드포인트
 @app.post("/major-recommend")
 async def major_recommend(data: SurveyRequest):
     try:
         return_text = []
         for ans in data.answers:
+            # 객관식
             if isinstance(ans.id, int):
                 qtext = QUESTION_MAP.get(ans.id, f"객관식 인식 불가({ans.id})")
                 return_text.append(f"[{ans.id}] {qtext}: {ans.answer}")
+            # 서술형
             else:
                 qtext = SUBJECTIVE_MAP.get(str(ans.id), f"서술형 인식 불가({ans.id})")
                 return_text.append(f"[{ans.id}] {qtext}: {ans.answer}")
-
+        
+        # 문자열 하나로 합치기
         formatted_answers = "\n".join(return_text)
         chain_input = {"answers": formatted_answers}
 
@@ -130,12 +136,14 @@ async def major_recommend(data: SurveyRequest):
         try:
             parsed = json.loads(clean)
         except Exception:
+            # 파싱 실패하면 원문 통째로 넣음
             parsed = {
                 "recommendation": "분석 실패",
                 "reason": f"응답 원문: {clean}"
             }
 
         return parsed
-
+    
+    # 나오면 안되는거
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
