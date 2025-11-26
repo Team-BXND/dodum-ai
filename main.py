@@ -1,6 +1,6 @@
 from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel
-from typing import List, Union
+from typing import List, Union, Dict 
 from langchain_openai import ChatOpenAI
 from langchain_core.prompts import ChatPromptTemplate
 from langchain_core.output_parsers import JsonOutputParser
@@ -77,19 +77,6 @@ examples = [
             "ai": 11,
         },
     },
-    {
-        "major": "서버 개발자",
-        "majorKey": "server",
-        "selectedReason": "님은 시스템의 안정성과 성능을 중요하게 생각하고, 서버 아키텍처에 대한 깊은 이해가 있어 서버 개발 분야가 잘 맞을 것 같습니다.",
-        "graph": {
-            "web": 30,
-            "server": 50,
-            "game": 5,
-            "ios": 5,
-            "android": 10,
-            "ai": 11,
-        },
-    },
 ]
 
 llm = ChatOpenAI(model="gpt-4o-mini", temperature=0.7, api_key=OPENAI_API_KEY)
@@ -126,30 +113,25 @@ prompt_template = ChatPromptTemplate.from_messages(
     ]
 )
 
-
-class Answer(BaseModel):
-    id: Union[int, str]
-    answer: Union[int, str]
-
-
 class SurveyRequest(BaseModel):
-    answers: List[Answer]
+    object: Dict[str, str]
+    subject: Dict[str, str]
 
-
-# api 엔드포인트
 @app.post("/major-recommend")
 async def major_recommend(data: SurveyRequest):
     try:
         return_text = []
-        for ans in data.answers:
-            # 객관식
-            if isinstance(ans.id, int):
-                qtext = QUESTION_MAP.get(ans.id, f"객관식 인식 불가({ans.id})")
-                return_text.append(f"[{ans.id}] {qtext}: {ans.answer}")
-            # 서술형
-            else:
-                qtext = SUBJECTIVE_MAP.get(str(ans.id), f"서술형 인식 불가({ans.id})")
-                return_text.append(f"[{ans.id}] {qtext}: {ans.answer}")
+
+        # 객관식 처리
+        for qid, value in data.object.items():
+            qid_int = int(qid)
+            qtext = QUESTION_MAP.get(qid_int, f"객관식 인식 불가({qid})")
+            return_text.append(f"[{qid}] {qtext}: {value}")
+
+        # 서술형 처리
+        for qid, value in data.subject.items():
+            qtext = SUBJECTIVE_MAP.get(str(qid), f"서술형 인식 불가({qid})")
+            return_text.append(f"[{qid}] {qtext}: {value}")
 
         # 문자열 하나로 합치기
         formatted_answers = "\n".join(return_text)
@@ -164,6 +146,5 @@ async def major_recommend(data: SurveyRequest):
 
         return result
 
-    # 나오면 안되는거
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
